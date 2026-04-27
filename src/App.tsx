@@ -1,270 +1,291 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { Star, TrendingUp, Award, Users, Gift, BarChart3, BookOpen, AlertTriangle, Upload, Download, Settings, FileText, LogOut } from "lucide-react";
+import { COLORS, DEFAULT_STUDENTS, DEFAULT_BEHAVIORS, DEFAULT_REWARDS, DEFAULT_LEVELS, DEFAULT_TIERS } from "./constants.js";
+import { generateSampleData, getTier, getLevel, loadData, saveData, getDaysInMonth } from "./utils.js";
+import { importExcel, exportExcel } from "./excelHelper.js";
+import { initAccounts, getSession, logout } from "./auth.js";
+import { TabBtn } from "./components/CommonUI.jsx";
+import { VisitCounter } from "./components/VisitCounter.jsx";
+import LoginPage from "./components/LoginPage.jsx";
+import StudentApp from "./components/StudentApp.jsx";
+import DashboardTab from "./components/DashboardTab.jsx";
+import DailyTab from "./components/DailyTab.jsx";
+import RankingTab from "./components/RankingTab.jsx";
+import BehaviorTab from "./components/BehaviorTab.jsx";
+import InterventionTab from "./components/InterventionTab.jsx";
+import RewardTab from "./components/RewardTab.jsx";
+import SettingsTab from "./components/SettingsTab.jsx";
+import ExamManagerTab from "./components/ExamManagerTab.jsx";
 
-import React, { useState, useEffect } from 'react';
-import { Header } from './components/Header';
-import { BottomNav } from './components/BottomNav';
-import { Dashboard } from './components/Dashboard';
-import { Quiz } from './components/Quiz';
-import { AITutor } from './components/AITutor';
-import { Settings } from './components/Settings';
-import { LearningPath } from './components/LearningPath';
-import { AppData, Settings as SettingsType, Session, Subject, Question } from './types';
-import { INITIAL_SUBJECTS, SAMPLE_QUESTIONS } from './constants';
-import { callGeminiAI, PROMPTS } from './services/geminiService';
-import { BookOpen, Sparkles } from 'lucide-react';
-import Swal from 'sweetalert2';
+export default function PBISApp() {
+    const [tab, setTab] = useState(0);
+    const [session, setSession] = useState(null);
+    const [students, setStudents] = useState(DEFAULT_STUDENTS);
+    const [starData, setStarData] = useState({});
+    const [exchanges, setExchanges] = useState([]);
+    const [interventions, setInterventions] = useState([]);
+    const [behaviors, setBehaviors] = useState([...DEFAULT_BEHAVIORS]);
+    const [rewards, setRewards] = useState([...DEFAULT_REWARDS]);
+    const [levels, setLevels] = useState([...DEFAULT_LEVELS]);
+    const [tiers, setTiers] = useState([...DEFAULT_TIERS]);
+    const [classes, setClasses] = useState(["10A1"]);
+    const [studentMeta, setStudentMeta] = useState({});
+    const [activeClass, setActiveClass] = useState("all");
+    const [exams, setExams] = useState([]);
+    const [submissions, setSubmissions] = useState([]);
+    const [loaded, setLoaded] = useState(false);
+    const now = new Date();
+    const [selectedDay, setSelectedDay] = useState(now.getDate());
+    const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1);
+    const [selectedYear, setSelectedYear] = useState(now.getFullYear());
+    const [searchTerm, setSearchTerm] = useState("");
+    const [importMsg, setImportMsg] = useState(null);
+    const fileInputRef = useRef(null);
 
-const STORAGE_KEY = 'eduexam_app_data';
+    // Load data on mount
+    useEffect(() => {
+        const sd = loadData("pbis-stars", null);
+        const ex = loadData("pbis-exchanges", []);
+        const iv = loadData("pbis-interventions", []);
+        const st = loadData("pbis-students", null);
+        const bh = loadData("pbis-behaviors", null);
+        const rw = loadData("pbis-rewards", null);
+        const lv = loadData("pbis-levels", null);
+        const tr = loadData("pbis-tiers", null);
+        const cl = loadData("pbis-classes", null);
+        const sm = loadData("pbis-studentmeta", null);
+        const ac = loadData("pbis-activeclass", null);
+        const savedExams = loadData("pbis-exams", []);
+        const savedSubs = loadData("pbis-submissions", []);
 
-export default function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const [activeSubject, setActiveSubject] = useState<string | null>(null);
-  const [aiLoading, setAiLoading] = useState(false);
-  
-  const [data, setData] = useState<AppData>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) return JSON.parse(saved);
-    
-    return {
-      subjects: INITIAL_SUBJECTS,
-      questions: SAMPLE_QUESTIONS,
-      sessions: [],
-      progress: {
-        totalAttempts: 0,
-        averageScore: 0,
-        streakDays: 1,
-        weakTopics: [],
-        learningPaths: {}
-      },
-      settings: {
-        theme: 'light',
-        soundEnabled: true,
-        autoSave: true,
-        geminiApiKey: '',
-        selectedModel: 'gemini-2.0-flash'
-      }
-    };
-  });
+        setStarData(sd || generateSampleData());
+        setExchanges(ex);
+        setInterventions(iv);
+        const loadedStudents = st || DEFAULT_STUDENTS;
+        if (st) setStudents(st);
+        if (bh) setBehaviors(bh);
+        if (rw) setRewards(rw);
+        if (lv) setLevels(lv);
+        if (tr) setTiers(tr);
+        if (cl) setClasses(cl);
+        if (sm) setStudentMeta(sm);
+        if (ac) setActiveClass(ac);
+        setExams(savedExams);
+        setSubmissions(savedSubs);
 
-  // Save data effect
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  }, [data]);
+        // Seed accounts (first time only)
+        initAccounts(loadedStudents);
 
-  const updateSettings = (partial: Partial<SettingsType>) => {
-    setData(prev => ({
-      ...prev,
-      settings: { ...prev.settings, ...partial }
-    }));
-  };
+        // Restore session
+        const sess = getSession();
+        setSession(sess);
+        setLoaded(true);
+    }, []);
 
-  const handleCompleteQuiz = (session: Session) => {
-    setData(prev => {
-      const newSessions = [...prev.sessions, session];
-      const totalScorePercent = newSessions.reduce((acc, s) => acc + (s.score / s.totalQuestions), 0);
-      
-      return {
-        ...prev,
-        sessions: newSessions,
-        progress: {
-          ...prev.progress,
-          totalAttempts: newSessions.length,
-          averageScore: totalScorePercent / newSessions.length,
-        }
-      };
-    });
+    // Auto-save all state
+    useEffect(() => {
+        if (!loaded) return;
+        saveData("pbis-stars", starData);
+        saveData("pbis-exchanges", exchanges);
+        saveData("pbis-interventions", interventions);
+        saveData("pbis-students", students);
+        saveData("pbis-behaviors", behaviors);
+        saveData("pbis-rewards", rewards);
+        saveData("pbis-levels", levels);
+        saveData("pbis-tiers", tiers);
+        saveData("pbis-classes", classes);
+        saveData("pbis-studentmeta", studentMeta);
+        saveData("pbis-activeclass", activeClass);
+        saveData("pbis-exams", exams);
+        saveData("pbis-submissions", submissions);
+    }, [starData, exchanges, interventions, students, behaviors, rewards, levels, tiers, classes, studentMeta, activeClass, exams, submissions, loaded]);
 
-    // If it's a first attempt for a subject or lower score, suggest learning path
-    const subjectSessions = data.sessions.filter(s => s.subjectId === session.subjectId);
-    if (subjectSessions.length === 0 || session.score / session.totalQuestions < 0.9) {
-      if (data.settings.geminiApiKey) {
-        generateLearningPath(session.subjectId, session.score, session.totalQuestions);
-      }
-    }
+    // Computed stats using custom levels & tiers
+    const summaryData = useMemo(() => {
+        return students.map((name) => {
+            const days = starData[name] || {};
+            const total = Object.values(days).reduce((s, v) => s + (v || 0), 0);
+            const activeDays = Object.values(days).filter(v => v !== undefined && v !== null).length || 1;
+            const avg = total / Math.max(activeDays, 1);
+            const daysAbove5 = Object.values(days).filter(v => v >= 5).length;
+            const exchanged = exchanges.filter(e => e.student === name).reduce((s, e) => s + e.cost, 0);
+            const tier = getTier(avg, tiers);
+            const level = getLevel(total, levels);
+            return { name, total, avg, daysAbove5, tier, level, remaining: total - exchanged, exchanged };
+        }).sort((a, b) => b.total - a.total);
+    }, [students, starData, exchanges, levels, tiers]);
 
-    setActiveSubject(null);
-  };
+    const tierCounts = useMemo(() => {
+        const c = {};
+        tiers.forEach(t => c[t.name] = 0);
+        summaryData.forEach(s => { if (c[s.tier.name] !== undefined) c[s.tier.name]++; });
+        return c;
+    }, [summaryData, tiers]);
 
-  const generateLearningPath = async (subjectId: string, score: number, total: number) => {
-    const subject = INITIAL_SUBJECTS.find(s => s.id === subjectId);
-    if (!subject) return;
+    const worstTier = useMemo(() => {
+        const sorted = [...tiers].sort((a, b) => a.minAvg - b.minAvg);
+        return sorted[0]?.name || "Tầng 3";
+    }, [tiers]);
+    const worstTierCount = tierCounts[worstTier] || 0;
 
-    setAiLoading(true);
-    try {
-      const prompt = PROMPTS.getLearningPath(subject.name, score, total);
-      const path = await callGeminiAI(prompt, data.settings.geminiApiKey);
-      if (path) {
-        setData(prev => ({
-          ...prev,
-          progress: {
-            ...prev.progress,
-            learningPaths: {
-              ...prev.progress.learningPaths,
-              [subjectId]: path
-            }
-          }
+    const updateStar = useCallback((name, day, value) => {
+        setStarData(prev => ({
+            ...prev,
+            [name]: { ...(prev[name] || {}), [day]: Math.max(0, Math.min(10, value)) }
         }));
-        setActiveTab('subjects'); // Switch to learning path view for this subject
-      }
-    } catch (error: any) {
-      Swal.fire('Lỗi AI', error.message, 'error');
-    } finally {
-      setAiLoading(false);
-    }
-  };
+    }, []);
 
-  const handleAskAI = async (question: Question, choice: string) => {
-    if (!data.settings.geminiApiKey) {
-      Swal.fire('Thông báo', 'Vui lòng cài đặt API Key trong phần Cài đặt để sử dụng tính năng này.', 'info');
-      return;
-    }
+    // Auth handlers
+    const handleLogin = (sess) => setSession(sess);
+    const handleLogout = () => { logout(); setSession(null); };
 
-    setActiveTab('ai-tutor');
-    // The AITutor handles its own message state for now, but we could pass initial prompt
-  };
-
-  const exportData = () => {
-    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `eduexam_backup_${new Date().toISOString().split('T')[0]}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const importData = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const imported = JSON.parse(event.target?.result as string);
-        setData(imported);
-        Swal.fire('Thành công', 'Dữ liệu đã được khôi phục!', 'success');
-      } catch (err) {
-        Swal.fire('Lỗi', 'File không đúng định dạng.', 'error');
-      }
+    // Excel Import
+    const handleImport = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        try {
+            const result = await importExcel(file);
+            if (result.students.length > 0) {
+                setStudents(result.students);
+                setStarData(prev => ({ ...prev, ...result.starData }));
+                setImportMsg({ type: "success", text: `✅ Đã nhập ${result.students.length} học sinh từ "${file.name}"` });
+            } else {
+                setImportMsg({ type: "error", text: "⚠️ Không tìm thấy học sinh trong file" });
+            }
+        } catch (err) {
+            setImportMsg({ type: "error", text: `❌ ${err}` });
+        }
+        e.target.value = "";
+        setTimeout(() => setImportMsg(null), 5000);
     };
-    reader.readAsText(file);
-  };
 
-  const resetData = () => {
-    localStorage.removeItem(STORAGE_KEY);
-    window.location.reload();
-  };
+    const handleExport = () => {
+        const daysInMonth = getDaysInMonth(selectedMonth, selectedYear);
+        exportExcel(students, starData, exchanges, daysInMonth, `T${selectedMonth}_${selectedYear}`);
+    };
 
-  // Render helpers
-  const renderContent = () => {
-    if (activeSubject) {
-      const subject = INITIAL_SUBJECTS.find(s => s.id === activeSubject);
-      const subjectQuestions = SAMPLE_QUESTIONS.filter(q => q.subjectId === activeSubject);
-      if (subject) {
-        return (
-          <Quiz 
-            subject={subject} 
-            questions={subjectQuestions} 
-            onComplete={handleCompleteQuiz}
-            onExit={() => setActiveSubject(null)}
-            onAskAI={handleAskAI}
-          />
-        );
-      }
-    }
-
-    switch (activeTab) {
-      case 'dashboard':
-        return <Dashboard data={data} onSelectSubject={setActiveSubject} />;
-      case 'subjects':
-        return (
-          <div className="p-4 space-y-8 pb-24 max-w-4xl mx-auto">
-            <h2 className="text-xl font-bold text-slate-800">Lộ trình học của bạn</h2>
-            {INITIAL_SUBJECTS.map(subject => (
-              <div key={subject.id} className="space-y-4">
-                <LearningPath 
-                  content={data.progress.learningPaths[subject.id] || ''} 
-                  subjectName={subject.name} 
-                />
-              </div>
-            ))}
-          </div>
-        );
-      case 'quiz':
-        return (
-          <div className="p-4 space-y-6 pb-24 max-w-3xl mx-auto">
-            <div className="text-center space-y-2 mb-8">
-              <h2 className="text-2xl font-bold text-slate-800">Sẵn sàng thi thử?</h2>
-              <p className="text-slate-500">Chọn một môn học để bắt đầu bài kiểm tra mô phỏng.</p>
+    // Loading screen
+    if (!loaded) return (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: COLORS.bg }}>
+            <div style={{ textAlign: "center" }}>
+                <div style={{ width: 48, height: 48, border: `4px solid ${COLORS.primary}`, borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 16px" }} />
+                <div style={{ color: COLORS.textMuted, fontSize: 14 }}>Đang tải hệ thống PBIS...</div>
             </div>
-            <div className="grid grid-cols-1 gap-4">
-              {INITIAL_SUBJECTS.map(subject => (
-                <div 
-                  key={subject.id}
-                  onClick={() => setActiveSubject(subject.id)}
-                  className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm hover:shadow-md transition-all cursor-pointer flex items-center justify-between group active:scale-95"
-                >
-                  <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 bg-primary/10 rounded-xl flex items-center justify-center text-primary group-hover:bg-primary group-hover:text-white transition-colors">
-                      <BookOpen size={24} />
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-slate-800">{subject.name}</h4>
-                      <p className="text-xs text-slate-400">{subject.questionsCount} câu hỏi • {subject.questionsCount} phút</p>
-                    </div>
-                  </div>
-                  <button className="px-4 py-2 bg-slate-50 text-slate-600 rounded-xl font-bold text-sm group-hover:bg-primary group-hover:text-white transition-colors">
-                    Bắt đầu
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      case 'ai-tutor':
-        return <AITutor apiKey={data.settings.geminiApiKey} />;
-      case 'settings':
-        return (
-          <Settings 
-            settings={data.settings} 
-            updateSettings={updateSettings}
-            exportData={exportData}
-            importData={importData}
-            resetData={resetData}
-          />
-        );
-      default:
-        return <Dashboard data={data} onSelectSubject={setActiveSubject} />;
-    }
-  };
-
-  return (
-    <div className="min-h-screen flex flex-col bg-slate-50 selection:bg-primary selection:text-white">
-      <Header onOpenSettings={() => setActiveTab('settings')} />
-      
-      <main className="flex-1 w-full max-w-screen-2xl mx-auto overflow-x-hidden pt-4">
-        {renderContent()}
-      </main>
-
-      <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
-
-      {aiLoading && (
-        <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center">
-          <div className="bg-white p-8 rounded-[40px] shadow-2xl flex flex-col items-center gap-4 max-w-xs text-center border border-white/20">
-            <div className="relative">
-              <div className="w-16 h-16 border-4 border-primary/20 border-t-primary rounded-full animate-spin"></div>
-              <Sparkles className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-primary" size={24} />
-            </div>
-            <div>
-              <p className="font-bold text-slate-800">AI đang thiết kế lộ trình...</p>
-              <p className="text-xs text-slate-400 mt-1">Đang phân tích kết quả bài thi của bạn để tối ưu hóa việc học.</p>
-            </div>
-          </div>
+            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
         </div>
-      )}
-    </div>
-  );
+    );
+
+    // Not logged in
+    if (!session) return <LoginPage onLogin={handleLogin} />;
+
+    // Student view
+    if (session.role === "student") {
+        return (
+            <StudentApp
+                session={session}
+                starData={starData}
+                students={students}
+                summaryData={summaryData}
+                levels={levels}
+                tiers={tiers}
+                exams={exams}
+                submissions={submissions}
+                setSubmissions={setSubmissions}
+                onLogout={handleLogout}
+            />
+        );
+    }
+
+    // Teacher view
+    const tabList = [
+        { icon: BarChart3, label: "Tổng quan" },
+        { icon: Star, label: "Ngôi sao" },
+        { icon: TrendingUp, label: "Xếp hạng" },
+        { icon: BookOpen, label: "Hành vi" },
+        { icon: AlertTriangle, label: "Can thiệp", badge: worstTierCount },
+        { icon: Gift, label: "Phần thưởng" },
+        { icon: FileText, label: "Đề thi" },
+        { icon: Settings, label: "Cài đặt" },
+    ];
+
+    return (
+        <div style={{ minHeight: "100vh", background: COLORS.bg, fontFamily: "'Nunito', 'Segoe UI', sans-serif" }}>
+            <style>{`
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
+        .tab-label { display: inline; }
+        @media (max-width: 700px) {
+          .tab-label { display: none !important; }
+          .header-actions { gap: 4px !important; }
+          .header-actions button { padding: 6px 8px !important; font-size: 11px !important; }
+        }
+        input[type=number]::-webkit-inner-spin-button { opacity: 1; }
+        @keyframes ping { 75%, 100% { transform: scale(2); opacity: 0; } }
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
+
+            {/* Header */}
+            <div style={{ background: `linear-gradient(135deg, ${COLORS.primary} 0%, #1a2d4a 100%)`, padding: "16px 20px 12px", color: "#fff" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <div style={{ fontSize: 28 }}>⭐</div>
+                        <div>
+                            <h1 style={{ fontSize: 20, fontWeight: 800, letterSpacing: -0.5, margin: 0 }}>Hệ thống PBIS</h1>
+                            <div style={{ fontSize: 12, opacity: 0.7, fontWeight: 500 }}>
+                                {activeClass === "all" ? classes.join(", ") : activeClass} — Tháng {selectedMonth}/{selectedYear}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="header-actions" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        {/* Teacher badge */}
+                        <div style={{ fontSize: 12, background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 8, padding: '5px 12px', fontWeight: 700 }}>
+                            👨‍🏫 {session.displayName}
+                        </div>
+                        <input type="file" ref={fileInputRef} accept=".xlsx,.xls" onChange={handleImport} style={{ display: "none" }} />
+                        <button onClick={() => fileInputRef.current?.click()} style={{ display: "flex", alignItems: "center", gap: 4, padding: "7px 12px", background: "rgba(255,255,255,0.15)", color: "#fff", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                            <Upload size={14} /> Import
+                        </button>
+                        <button onClick={handleExport} style={{ display: "flex", alignItems: "center", gap: 4, padding: "7px 12px", background: "rgba(255,255,255,0.15)", color: "#fff", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                            <Download size={14} /> Export
+                        </button>
+                        <button onClick={handleLogout} style={{ display: "flex", alignItems: "center", gap: 4, padding: "7px 12px", background: "rgba(220,38,38,0.25)", color: "#fff", border: "1px solid rgba(220,38,38,0.4)", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>
+                            <LogOut size={14} /> Đăng xuất
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            {importMsg && (
+                <div style={{ padding: "8px 20px", background: importMsg.type === "success" ? "#dcfce7" : "#fef2f2", fontSize: 13, fontWeight: 600, color: importMsg.type === "success" ? "#166534" : "#991b1b", textAlign: "center" }}>
+                    {importMsg.text}
+                </div>
+            )}
+
+            {/* Navigation */}
+            <div style={{ background: "#fff", borderBottom: `1px solid ${COLORS.border}`, padding: "8px 12px", display: "flex", gap: 4, overflowX: "auto", position: "sticky", top: 0, zIndex: 100, boxShadow: "0 2px 8px rgba(0,0,0,0.06)" }}>
+                {tabList.map((t, i) => <TabBtn key={i} {...t} active={tab === i} onClick={() => setTab(i)} />)}
+            </div>
+
+            {/* Content */}
+            <div style={{ padding: "16px 16px 24px", maxWidth: 1100, margin: "0 auto" }}>
+                {tab === 0 && <DashboardTab summaryData={summaryData} tierCounts={tierCounts} starData={starData} students={students} />}
+                {tab === 1 && <DailyTab students={students} starData={starData} updateStar={updateStar} selectedDay={selectedDay} setSelectedDay={setSelectedDay} selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} selectedYear={selectedYear} setSelectedYear={setSelectedYear} searchTerm={searchTerm} setSearchTerm={setSearchTerm} />}
+                {tab === 2 && <RankingTab summaryData={summaryData} />}
+                {tab === 3 && <BehaviorTab behaviors={behaviors} setBehaviors={setBehaviors} />}
+                {tab === 4 && <InterventionTab summaryData={summaryData} interventions={interventions} setInterventions={setInterventions} tiers={tiers} />}
+                {tab === 5 && <RewardTab summaryData={summaryData} exchanges={exchanges} setExchanges={setExchanges} rewards={rewards} />}
+                {tab === 6 && <ExamManagerTab exams={exams} setExams={setExams} submissions={submissions} setSubmissions={setSubmissions} session={session} students={students} classes={classes} />}
+                {tab === 7 && <SettingsTab students={students} setStudents={setStudents} setStarData={setStarData} behaviors={behaviors} setBehaviors={setBehaviors} rewards={rewards} setRewards={setRewards} levels={levels} setLevels={setLevels} tiers={tiers} setTiers={setTiers} classes={classes} setClasses={setClasses} studentMeta={studentMeta} setStudentMeta={setStudentMeta} activeClass={activeClass} setActiveClass={setActiveClass} />}
+            </div>
+
+            {/* Footer */}
+            <div style={{ borderTop: `1px solid ${COLORS.border}`, background: "#fff", paddingBottom: 8 }}>
+                <VisitCounter />
+                <div style={{ textAlign: "center", fontSize: 11, color: COLORS.textMuted, padding: "4px 16px 12px" }}>
+                    © {new Date().getFullYear()} PBIS Tracker · Hệ thống theo dõi hành vi tích cực
+                </div>
+            </div>
+        </div>
+    );
 }
